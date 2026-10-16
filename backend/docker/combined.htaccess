@@ -1,0 +1,23 @@
+<IfModule mod_rewrite.c>
+    <IfModule mod_negotiation.c>
+        Options -MultiViews -Indexes
+    </IfModule>
+
+    RewriteEngine On
+
+    RewriteCond %{HTTP:Authorization} .
+    RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+    RewriteCond %{HTTP:x-xsrf-token} .
+    RewriteRule .* - [E=HTTP_X_XSRF_TOKEN:%{HTTP:X-XSRF-Token}]
+
+    RewriteCond %{REQUEST_FILENAME} -f [OR]
+    RewriteCond %{REQUEST_FILENAME} -d
+    RewriteRule ^ - [END]
+
+    RewriteRule ^(api|sanctum)(/|$) index.php [END,QSA]
+    RewriteRule ^health$ index.php [END,QSA]
+    RewriteRule ^(dashboard|profile|register|login|forgot-password|reset-password|verify-email|email/verification-notification|confirm-password|password|logout)(/|$) index.php [END,QSA]
+
+    RewriteRule ^ index.html [END]
+</IfModule>

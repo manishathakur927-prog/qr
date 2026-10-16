@@ -1,3 +1,15 @@
+FROM node:22-bookworm-slim AS frontend-build
+
+WORKDIR /frontend
+
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+
+COPY frontend/ ./
+ARG VITE_API_BASE_URL=
+ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
+RUN npm run build
+
 FROM composer:2 AS composer-bin
 
 FROM php:8.3-apache-bookworm
@@ -49,7 +61,7 @@ RUN a2enmod rewrite headers \
     && if ! getent group 1000 >/dev/null; then groupadd --gid 1000 render-secrets; fi \
     && usermod -a -G 1000 www-data
 
-COPY . .
+COPY backend/ ./
 
 RUN composer install \
         --no-dev \
@@ -63,6 +75,7 @@ RUN composer install \
         '    AllowOverride All' \
         '    Require all granted' \
         '</Directory>' \
+        'DirectoryIndex index.html index.php' \
         > /etc/apache2/conf-available/laravel-public.conf \
     && a2enconf laravel-public \
     && mkdir -p \
@@ -74,6 +87,9 @@ RUN composer install \
     && chown -R www-data:www-data storage bootstrap/cache \
     && chmod -R ug+rwX storage bootstrap/cache \
     && chmod +x docker/start.sh
+
+COPY --from=frontend-build /frontend/dist/ ./public/
+COPY backend/docker/combined.htaccess ./public/.htaccess
 
 EXPOSE 10000
 
