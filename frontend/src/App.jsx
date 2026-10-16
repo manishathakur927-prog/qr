@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
 import './App.css'
 
 const operatingAlerts = [
@@ -22,6 +23,8 @@ const currency = new Intl.NumberFormat('en-IN', {
   currency: 'INR',
   maximumFractionDigits: 0,
 })
+
+const billsPerPage = 10
 
 const razorpayKeyId = import.meta.env.VITE_RAZORPAY_KEY_ID || ''
 
@@ -54,6 +57,12 @@ async function requestJson(url, options = {}, token = '') {
 function App() {
   const [tableId, setTableId] = useState('1')
   const [pin, setPin] = useState('1234')
+  const [guestName, setGuestName] = useState(() => {
+    try { return localStorage.getItem('guestName') || '' } catch { return '' }
+  })
+  const [guestContactNumber, setGuestContactNumber] = useState(() => {
+    try { return localStorage.getItem('guestContactNumber') || '' } catch { return '' }
+  })
   const [sessionId, setSessionId] = useState('')
   const [guestSessionId, setGuestSessionId] = useState(() => {
     try {
@@ -82,6 +91,7 @@ function App() {
   const [opsLoadError, setOpsLoadError] = useState('')
   const [guestOrders, setGuestOrders] = useState([])
   const [billingTab, setBillingTab] = useState('pending')
+  const [billingPage, setBillingPage] = useState(1)
   const [activeOrderTab, setActiveOrderTab] = useState('submitted')
   const [isLoadingOps, setIsLoadingOps] = useState(false)
   const [staffEmail, setStaffEmail] = useState('manager@example.com')
@@ -175,6 +185,7 @@ function App() {
   const [platformSearchTerm, setPlatformSearchTerm] = useState('')
   const [platformStatusFilter, setPlatformStatusFilter] = useState('all')
   const [staffMembers, setStaffMembers] = useState([])
+  const [availableBranches, setAvailableBranches] = useState([])
   const [restaurantProfile, setRestaurantProfile] = useState(() => {
     try {
       const saved = localStorage.getItem('restaurantProfile')
@@ -235,7 +246,9 @@ function App() {
   const [restaurantShareUrl, setRestaurantShareUrl] = useState('')
   const [restaurantPageMessage, setRestaurantPageMessage] = useState('')
   const [editingStaffId, setEditingStaffId] = useState(null)
-  const [staffDraft, setStaffDraft] = useState({ name: '', role: 'Waiter', status: 'online' })
+  const [staffDraft, setStaffDraft] = useState({ name: '', email: '', role: 'Waiter', status: 'active', branchId: '', password: '' })
+  const [staffEditError, setStaffEditError] = useState('')
+  const [isSavingStaff, setIsSavingStaff] = useState(false)
   const [editingTableId, setEditingTableId] = useState(null)
   const [tableDraft, setTableDraft] = useState({ table_number: '', name: '', section: '', capacity: '2', status: 'available' })
   const [editingMenuItemId, setEditingMenuItemId] = useState(null)
@@ -255,6 +268,9 @@ function App() {
   )
   const canEditRestaurantPage = Boolean(
     staffUser && /restaurant owner|owner/i.test(activeUserRole),
+  )
+  const canReverseBillPayment = Boolean(
+    staffUser && !isSuperAdmin && /\bowner\b/i.test(activeUserRole),
   )
 
   const adminMetrics = useMemo(() => {
@@ -473,7 +489,19 @@ function App() {
     setPin(pinFromUrl)
     setView('guest')
 
-    void joinTable(tableFromUrl, pinFromUrl)
+    let savedGuestName = ''
+    let savedGuestContact = ''
+    try {
+      savedGuestName = localStorage.getItem('guestName') || ''
+      savedGuestContact = localStorage.getItem('guestContactNumber') || ''
+    } catch {
+      // Continue to the join form when browser storage is unavailable.
+    }
+    if (savedGuestName.trim()) {
+      setGuestName(savedGuestName)
+      setGuestContactNumber(savedGuestContact)
+      void joinTable(tableFromUrl, pinFromUrl, savedGuestName, savedGuestContact)
+    }
   }, [])
 
   useEffect(() => {
@@ -512,6 +540,16 @@ function App() {
     [guestOrders],
   )
 
+  const guestAmountDue = useMemo(
+    () => guestOrders
+      .filter((order) => order.status !== 'cancelled')
+      .reduce((sum, order) => sum + Math.max(
+        Number(order.amount_due ?? (Number(order.total || 0) - Number(order.paid_amount || 0))),
+        0,
+      ), 0),
+    [guestOrders],
+  )
+
   const fetchGuestOrders = async (tableValue = tableId, sessionValue = sessionId, guestSessionValue = guestSessionId) => {
     if (!tableValue || !sessionValue) {
       setGuestOrders([])
@@ -538,7 +576,7 @@ function App() {
     }
   }
 
-  const joinTable = async (tableValue = tableId, pinValue = pin) => {
+  const joinTable = async (tableValue = tableId, pinValue = pin, nameValue = guestName, contactValue = guestContactNumber) => {
     if (!String(tableValue).trim() || !/^[0-9]+$/.test(String(tableValue).trim())) {
       setError('Please enter a valid numeric table ID.')
       return
@@ -546,6 +584,11 @@ function App() {
 
     if (!String(pinValue).trim()) {
       setError('Please enter the guest PIN.')
+      return
+    }
+
+    if (!String(nameValue).trim()) {
+      setError('Please enter your name.')
       return
     }
 
@@ -559,6 +602,8 @@ function App() {
         body: JSON.stringify({
           table_id: Number(tableValue),
           pin: String(pinValue),
+          name: String(nameValue).trim(),
+          contact_number: String(contactValue || '').trim() || null,
           guest_session_id: guestSessionId ? Number(guestSessionId) : undefined,
           guest_session_token: guestSessionToken || undefined,
         }),
@@ -581,6 +626,16 @@ function App() {
       }
 
       setRestaurantMenu(nextMenuItems)
+      const savedName = response?.data?.guest_name || String(nameValue).trim()
+      const savedContact = response?.data?.guest_contact_number || String(contactValue || '').trim()
+      setGuestName(savedName)
+      setGuestContactNumber(savedContact)
+      try {
+        localStorage.setItem('guestName', savedName)
+        localStorage.setItem('guestContactNumber', savedContact)
+      } catch {
+        // Guest details remain available in component state for this visit.
+      }
 
       const currentOrder = response?.data?.current_order
       const nextCart = {}
@@ -688,7 +743,7 @@ function App() {
       setError('')
       setConfirmation('')
 
-      const response = await requestJson('/api/v1/guest/orders', {
+      await requestJson('/api/v1/guest/orders', {
         method: 'POST',
         body: JSON.stringify({
           table_id: Number(tableId),
@@ -703,9 +758,7 @@ function App() {
         }),
       })
 
-      setConfirmation(
-        `Order ${response?.data?.order_id ?? ''} submitted successfully. Chef is preparing it now.`,
-      )
+      setConfirmation('Order submitted successfully. Chef is preparing it now.')
       setCart({})
       await fetchGuestOrders(tableId, sessionId, guestSessionId)
     } catch (submitError) {
@@ -855,6 +908,10 @@ function App() {
       if (resolvedRestaurantId !== String(restaurantId)) {
         setRestaurantId(resolvedRestaurantId)
       }
+      setAvailableBranches((restaurantCandidate.branches || []).map((branch) => ({
+        id: String(branch.id),
+        name: branch.name || `Branch ${branch.id}`,
+      })))
       if (resolvedBranchId && resolvedBranchId !== String(branchId)) {
         setBranchId(resolvedBranchId)
       }
@@ -949,9 +1006,19 @@ function App() {
       return
     }
 
+    let requestInFlight = false
+    let isInitialLoad = true
+
     const loadOperationalData = async () => {
+      if (requestInFlight) {
+        return
+      }
+
+      requestInFlight = true
       try {
-        setIsLoadingOps(true)
+        if (isInitialLoad) {
+          setIsLoadingOps(true)
+        }
         setOpsLoadError('')
 
         const context = await ensureOwnerRestaurantAndBranch(staffToken)
@@ -960,7 +1027,10 @@ function App() {
 
         const [membershipsResponse, tablesResponse, ordersResponse, billsResponse] = await Promise.all([
           requestJson(`/api/v1/restaurants/${targetRestaurantId}/memberships`, {}, staffToken).catch(() => ({ data: [] })),
-          requestJson(`/api/v1/restaurants/${targetRestaurantId}/branches/${targetBranchId}/tables`, {}, staffToken).catch(() => ({ data: [] })),
+          requestJson(`/api/v1/restaurants/${targetRestaurantId}/branches/${targetBranchId}/tables`, {}, staffToken).catch((error) => {
+            setOpsLoadError((current) => current ? `${current} Tables: ${error.message}` : `Could not load restaurant tables: ${error.message}`)
+            return { data: [] }
+          }),
           requestJson(`/api/v1/restaurants/${targetRestaurantId}/branches/${targetBranchId}/orders`, {}, staffToken).catch((error) => {
             setOpsLoadError(`Could not load restaurant orders: ${error.message}`)
             return { data: [] }
@@ -977,8 +1047,13 @@ function App() {
               const normalizedStatus = (membership?.status || 'active').toLowerCase()
               return {
                 id: membership?.user_id ?? membership?.id,
+                membershipId: membership?.id,
                 name: membership?.user?.name || 'Unknown staff',
+                email: membership?.user?.email || '',
                 role: membership?.role?.name || 'Staff',
+                membershipStatus: normalizedStatus,
+                branchId: membership?.branch?.id ? String(membership.branch.id) : '',
+                branchName: membership?.branch?.name || 'All branches',
                 status: normalizedStatus === 'active' ? 'online' : normalizedStatus === 'inactive' ? 'break' : normalizedStatus,
               }
             }),
@@ -1003,8 +1078,12 @@ function App() {
             ordersResponse.data.map((order) => ({
               id: order.id,
               table: String(order.table || 'T-01'),
+              orderStatus: order.status || 'submitted',
               customer: order.customer || (order.guest_session_id ? `Guest #${order.guest_session_id}` : `Table ${String(order.table || 'T-01')}`),
               customerId: order.customer_id ?? order.guest_session_id ?? null,
+              guestSessionId: order.guest_session_id ?? null,
+              guestName: order.guest_name ?? '',
+              guestContactNumber: order.guest_contact_number ?? '',
               time: order.time || 'Now',
               items: Array.isArray(order.items) ? order.items : [],
               total: Number(order.total || 0),
@@ -1021,10 +1100,15 @@ function App() {
               id: bill.id,
               table: String(bill.table || 'T-01'),
               orderId: bill.orderId ?? bill.order_id ?? 0,
+              orderStatus: bill.order_status ?? '',
+              guestSessionId: bill.guest_session_id ?? null,
+              guestName: bill.guest_name ?? '',
+              guestContactNumber: bill.guest_contact_number ?? '',
               total: Number(bill.total || 0),
               paid: Number(bill.paid || 0),
               status: bill.status || 'pending',
               method: bill.method || 'cash',
+              provider: bill.provider || '',
             })),
           )
         } else {
@@ -1035,11 +1119,22 @@ function App() {
         setBills([])
         setOpsLoadError(error.message || 'Could not load restaurant operations.')
       } finally {
-        setIsLoadingOps(false)
+        if (isInitialLoad) {
+          setIsLoadingOps(false)
+          isInitialLoad = false
+        }
+        requestInFlight = false
       }
     }
 
     void loadOperationalData()
+
+    // Keep the staff order board current while guests place orders from their tables.
+    const refreshInterval = window.setInterval(() => {
+      void loadOperationalData()
+    }, 10000)
+
+    return () => window.clearInterval(refreshInterval)
   }, [view, staffToken, restaurantId, branchId])
 
   const handleStaffLogin = async (event) => {
@@ -1180,29 +1275,69 @@ function App() {
   }
 
   const startEditingStaff = (member) => {
+    setStaffEditError('')
     setEditingStaffId(member.id)
     setStaffDraft({
       name: member.name,
+      email: member.email || '',
       role: member.role,
-      status: member.status,
+      status: member.membershipStatus || (member.status === 'break' ? 'inactive' : 'active'),
+      branchId: member.branchId || '',
+      password: '',
     })
   }
 
-  const saveStaffMember = () => {
-    if (!staffDraft.name.trim()) {
+  const saveStaffMember = async () => {
+    if (!staffDraft.name.trim() || !staffDraft.email.trim()) {
+      setStaffEditError('Enter the employee name and email address.')
       return
     }
 
-    setStaffMembers((current) =>
-      current.map((member) =>
-        member.id === editingStaffId
-          ? { ...member, name: staffDraft.name.trim(), role: staffDraft.role, status: staffDraft.status }
-          : member,
-      ),
-    )
+    const member = staffMembers.find((item) => item.id === editingStaffId)
+    if (!member?.membershipId || !restaurantId || !staffToken) {
+      setStaffEditError('Could not find the employee membership to update. Refresh the page and try again.')
+      return
+    }
 
-    setEditingStaffId(null)
-    setStaffDraft({ name: '', role: 'Waiter', status: 'online' })
+    try {
+      setIsSavingStaff(true)
+      setStaffEditError('')
+      const payload = {
+        name: staffDraft.name.trim(),
+        email: staffDraft.email.trim(),
+        role: staffDraft.role.trim(),
+        status: staffDraft.status,
+        branch_id: staffDraft.branchId || null,
+      }
+      if (staffDraft.password.trim()) {
+        payload.password = staffDraft.password
+      }
+
+      await requestJson(`/api/v1/restaurants/${restaurantId}/memberships/${member.membershipId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      }, staffToken)
+
+      const normalizedStatus = staffDraft.status === 'active' ? 'online' : 'break'
+      setStaffMembers((current) => current.map((item) => item.id === editingStaffId
+        ? {
+            ...item,
+            name: staffDraft.name.trim(),
+            email: staffDraft.email.trim(),
+            role: staffDraft.role.trim(),
+            membershipStatus: staffDraft.status,
+            branchId: staffDraft.branchId,
+            branchName: availableBranches.find((branch) => branch.id === staffDraft.branchId)?.name || 'All branches',
+            status: normalizedStatus,
+          }
+        : item))
+      setEditingStaffId(null)
+      setStaffDraft({ name: '', email: '', role: 'Waiter', status: 'active', branchId: '', password: '' })
+    } catch (error) {
+      setStaffEditError(error.message || 'Could not save employee details.')
+    } finally {
+      setIsSavingStaff(false)
+    }
   }
 
   const deleteStaffMember = (id) => {
@@ -1218,7 +1353,7 @@ function App() {
     setStaffMembers((current) => current.filter((member) => member.id !== id))
     if (editingStaffId === id) {
       setEditingStaffId(null)
-      setStaffDraft({ name: '', role: 'Waiter', status: 'online' })
+      setStaffDraft({ name: '', email: '', role: 'Waiter', status: 'active', branchId: '', password: '' })
     }
   }
 
@@ -1595,7 +1730,7 @@ function App() {
         throw new Error('The branch admin role was not created correctly.')
       }
 
-      await requestJson(`/api/v1/restaurants/${activeRestaurantId}/memberships`, {
+      const membershipResponse = await requestJson(`/api/v1/restaurants/${activeRestaurantId}/memberships`, {
         method: 'POST',
         body: JSON.stringify({
           user_id: createdUser?.user?.id,
@@ -1607,8 +1742,13 @@ function App() {
 
       const newStaffMember = {
         id: createdUser?.user?.id || Date.now(),
+        membershipId: membershipResponse?.data?.id,
         name: createdUser?.user?.name || branchAdminName.trim(),
+        email: createdUser?.user?.email || branchAdminEmail.trim(),
         role: normalizedRoleName,
+        membershipStatus: 'active',
+        branchId: activeBranchId,
+        branchName: availableBranches.find((branch) => branch.id === activeBranchId)?.name || 'Main Branch',
         status: 'online',
       }
 
@@ -1835,6 +1975,10 @@ function App() {
             id: billPayload.id ?? Date.now(),
             table: String(order.table || 'T-01'),
             orderId: order.id,
+            orderStatus: order.status,
+            guestSessionId: order.guestSessionId ?? null,
+            guestName: order.guestName ?? '',
+            guestContactNumber: order.guestContactNumber ?? '',
             total: Number(billPayload.total_amount ?? order.total),
             paid: Number(billPayload.paid_amount ?? 0),
             status: billPayload.status ?? 'pending',
@@ -1991,6 +2135,43 @@ function App() {
         }
       }),
     )
+  }
+
+  const reverseCashBillPayment = async (bill) => {
+    if (!canReverseBillPayment || !staffToken || bill.provider !== 'cash' || Number(bill.paid) <= 0) {
+      return
+    }
+
+    const confirmed = window.confirm(
+      `Undo the cash payment for Bill #${bill.id}? The bill will return to Pending with the full amount due.`,
+    )
+    if (!confirmed) return
+
+    try {
+      const context = await ensureOwnerRestaurantAndBranch(staffToken)
+      const targetRestaurantId = context.restaurantId || restaurantId || '1'
+      const targetBranchId = context.branchId || branchId || '1'
+      const response = await requestJson(
+        `/api/v1/restaurants/${targetRestaurantId}/branches/${targetBranchId}/bills/${bill.id}/reverse-cash-payment`,
+        { method: 'PATCH' },
+        staffToken,
+      )
+      const paymentPayload = response?.data || {}
+
+      setBills((current) => current.map((entry) => entry.id === bill.id
+        ? {
+            ...entry,
+            paid: Number(paymentPayload.paid_amount ?? 0),
+            total: Number(paymentPayload.total_amount ?? entry.total),
+            status: paymentPayload.status ?? 'pending',
+            method: '',
+            provider: '',
+          }
+        : entry))
+      setConfirmation(`Cash payment for Bill #${bill.id} was undone.`)
+    } catch (reverseError) {
+      setError(reverseError.message)
+    }
   }
 
   const renderLandingPage = () => (
@@ -2615,44 +2796,13 @@ function App() {
                 </div>
                 <div className="row-actions">
                   <span className={`team-status ${member.status}`}>{member.status}</span>
-                  <button type="button" className="small-button" onClick={() => startEditingStaff(member)}>Edit</button>
+                  <button type="button" className="small-button" onClick={(event) => { event.preventDefault(); event.stopPropagation(); startEditingStaff(member) }}>Edit</button>
                   <button type="button" className="small-button accent" onClick={() => deleteStaffMember(member.id)}>Delete</button>
                 </div>
               </div>
             ))}
           </div>
 
-          {editingStaffId && (
-            <div className="modal-backdrop" onClick={() => setEditingStaffId(null)}>
-              <div className="modal-card" onClick={(event) => event.stopPropagation()}>
-                <div className="panel-header compact">
-                  <h3>Edit employee</h3>
-                  <button type="button" className="small-button" onClick={() => setEditingStaffId(null)}>Close</button>
-                </div>
-
-                <div className="inline-editor">
-                  <input
-                    type="text"
-                    value={staffDraft.name}
-                    onChange={(event) => setStaffDraft((current) => ({ ...current, name: event.target.value }))}
-                    placeholder="Employee name"
-                  />
-                  <select value={staffDraft.role} onChange={(event) => setStaffDraft((current) => ({ ...current, role: event.target.value }))}>
-                    <option value="Waiter">Waiter</option>
-                    <option value="Chef">Chef</option>
-                    <option value="Manager">Manager</option>
-                    <option value="Branch Admin">Branch Admin</option>
-                  </select>
-                  <select value={staffDraft.status} onChange={(event) => setStaffDraft((current) => ({ ...current, status: event.target.value }))}>
-                    <option value="online">online</option>
-                    <option value="busy">busy</option>
-                    <option value="break">break</option>
-                  </select>
-                  <button type="button" className="small-button" onClick={saveStaffMember}>Save</button>
-                </div>
-              </div>
-            </div>
-          )}
         </section>
       </div>
 
@@ -2834,7 +2984,7 @@ function App() {
               </div>
               <div className="row-actions">
                 <span className={`team-status ${member.status}`}>{member.status}</span>
-                <button type="button" className="small-button" onClick={() => startEditingStaff(member)}>Edit</button>
+                <button type="button" className="small-button" onClick={(event) => { event.preventDefault(); event.stopPropagation(); startEditingStaff(member) }}>Edit</button>
                 <button type="button" className="small-button accent" onClick={() => deleteStaffMember(member.id)}>Delete</button>
               </div>
             </div>
@@ -3049,12 +3199,102 @@ function App() {
     )
   }
 
-  const renderAdminBilling = () => {
-    const visibleBills = bills.filter((bill) => {
-      if (billingTab === 'paid') return bill.status === 'paid'
-      if (billingTab === 'cancelled') return bill.status === 'cancelled'
-      return ['pending', 'partial'].includes(bill.status)
+  const getBillingPage = (visibleBills) => {
+    const totalPages = Math.max(1, Math.ceil(visibleBills.length / billsPerPage))
+    const currentPage = Math.min(billingPage, totalPages)
+    const startIndex = (currentPage - 1) * billsPerPage
+
+    return {
+      pageBills: visibleBills.slice(startIndex, startIndex + billsPerPage),
+      totalPages,
+      currentPage,
+      firstBill: visibleBills.length === 0 ? 0 : startIndex + 1,
+      lastBill: Math.min(startIndex + billsPerPage, visibleBills.length),
+    }
+  }
+
+  const renderBillingPagination = ({ total, firstBill, lastBill, currentPage, totalPages }) => (
+    <div className="billing-pagination" aria-label="Billing pagination">
+      <span>Showing {firstBill}–{lastBill} of {total} guest groups</span>
+      <div>
+        <button type="button" className="small-button" disabled={currentPage <= 1} onClick={() => setBillingPage(currentPage - 1)}>
+          Previous
+        </button>
+        <span>Page {currentPage} of {totalPages}</span>
+        <button type="button" className="small-button" disabled={currentPage >= totalPages} onClick={() => setBillingPage(currentPage + 1)}>
+          Next
+        </button>
+      </div>
+    </div>
+  )
+
+  const groupBillsByGuestDevice = (billList) => {
+    const groups = new Map()
+
+    billList.forEach((bill) => {
+      const guestSessionId = bill.guestSessionId ? String(bill.guestSessionId) : ''
+      const key = guestSessionId ? `guest-${guestSessionId}` : `order-${bill.orderId || bill.id}`
+
+      if (!groups.has(key)) {
+        groups.set(key, {
+          key,
+          guestSessionId,
+          guestName: bill.guestName || '',
+          guestContactNumber: bill.guestContactNumber || '',
+          table: bill.table,
+          bills: [],
+          total: 0,
+          paid: 0,
+          due: 0,
+        })
+      }
+
+      const group = groups.get(key)
+      group.bills.push(bill)
+      group.total += Number(bill.total || 0)
+      group.paid += Number(bill.paid || 0)
+      if (bill.orderStatus !== 'cancelled' && bill.status !== 'cancelled') {
+        group.due += Math.max(Number(bill.total || 0) - Number(bill.paid || 0), 0)
+      }
     })
+
+    return [...groups.values()]
+  }
+
+  const getBillsForBillingTab = () => {
+    const billsWithCancelledOrders = billingTab === 'cancelled'
+      ? [
+          ...bills,
+          ...orders
+            .filter((order) => order.status === 'cancelled' && !bills.some((bill) => Number(bill.orderId) === Number(order.id)))
+            .map((order) => ({
+              id: `cancelled-order-${order.id}`,
+              orderId: order.id,
+              orderStatus: 'cancelled',
+              guestSessionId: order.guestSessionId,
+              guestName: order.guestName || order.customer,
+              guestContactNumber: order.guestContactNumber,
+              table: order.table,
+              total: Number(order.total || 0),
+              paid: 0,
+              status: 'cancelled',
+              isOrderOnly: true,
+            })),
+        ]
+      : bills
+
+    return billsWithCancelledOrders.filter((bill) => {
+      const isCancelled = bill.status === 'cancelled' || bill.orderStatus === 'cancelled'
+      if (billingTab === 'paid') return bill.status === 'paid' && !isCancelled
+      if (billingTab === 'cancelled') return isCancelled
+      return ['pending', 'partial'].includes(bill.status) && !isCancelled
+    })
+  }
+
+  const renderAdminBilling = () => {
+    const visibleBills = getBillsForBillingTab()
+    const visibleBillGroups = groupBillsByGuestDevice(visibleBills)
+    const pagination = getBillingPage(visibleBillGroups)
 
     return (
       <>
@@ -3071,7 +3311,7 @@ function App() {
               key={tab}
               type="button"
               className={billingTab === tab ? 'tab active' : 'tab'}
-              onClick={() => setBillingTab(tab)}
+              onClick={() => { setBillingTab(tab); setBillingPage(1) }}
             >
               {tab === 'paid' ? 'Paid orders' : tab === 'cancelled' ? 'Cancelled orders' : 'Pending orders'}
             </button>
@@ -3083,24 +3323,40 @@ function App() {
             <p className="empty-state">No {billingTab === 'paid' ? 'paid' : billingTab === 'cancelled' ? 'cancelled' : 'pending'} bills yet.</p>
           )}
 
-          {visibleBills.map((bill) => (
-            <div className="bill-card" key={bill.id}>
-              <div className="order-head">
-                <strong>Bill #{bill.id}</strong>
-                <span>{bill.table}</span>
+          {pagination.pageBills.map((group) => (
+            <div className="bill-device-group" key={group.key}>
+              <div className="bill-device-header">
+                <div>
+                  <strong>{group.guestName || (group.guestSessionId ? `Guest device #${group.guestSessionId}` : 'Table guest')}</strong>
+                  {group.guestContactNumber && <span>{group.guestContactNumber}</span>}
+                  <span>{group.table} · {group.bills.length} {group.bills.length === 1 ? 'bill' : 'bills'}</span>
+                </div>
+                <div>
+                  <span>Device amount due</span>
+                  <strong>{currency.format(group.due)}</strong>
+                </div>
               </div>
-              <p>Paid: ₹{bill.paid} / ₹{bill.total}</p>
-              <div className="order-actions">
-                <span className="status-badge">{bill.status}</span>
-                {billingTab !== 'paid' && (
-                  <button type="button" className="small-button" onClick={() => void payBill(bill.id, bill.total - bill.paid, 'cash')}>
-                    Mark paid
-                  </button>
-                )}
-              </div>
+              {group.bills.map((bill) => (
+                <div className="bill-device-line" key={bill.id}>
+                  <span>{bill.isOrderOnly ? `Cancelled order #${bill.orderId}` : `Bill #${bill.id} · Order #${bill.orderId}`}</span>
+                  <span>{bill.isOrderOnly ? `Order total ${currency.format(bill.total)}` : `${currency.format(bill.paid)} paid of ${currency.format(bill.total)}`}</span>
+                  <span className="status-badge">{bill.orderStatus === 'cancelled' ? 'cancelled' : bill.status}</span>
+                  {billingTab === 'pending' && !bill.isOrderOnly && (
+                    <button type="button" className="small-button" onClick={() => void payBill(bill.id, bill.total - bill.paid, 'cash')}>
+                      Mark paid
+                    </button>
+                  )}
+                  {canReverseBillPayment && bill.provider === 'cash' && bill.paid > 0 && (
+                    <button type="button" className="small-button" onClick={() => void reverseCashBillPayment(bill)}>
+                      Undo payment
+                    </button>
+                  )}
+                </div>
+              ))}
             </div>
           ))}
         </div>
+        {visibleBillGroups.length > billsPerPage && renderBillingPagination({ ...pagination, total: visibleBillGroups.length })}
       </>
     )
   }
@@ -3732,6 +3988,31 @@ function App() {
           </label>
 
           <label>
+            Your name *
+            <input
+              type="text"
+              value={guestName}
+              onChange={(event) => setGuestName(event.target.value)}
+              placeholder="Enter your name"
+              maxLength={120}
+              autoComplete="name"
+              required
+            />
+          </label>
+
+          <label>
+            Contact number
+            <input
+              type="tel"
+              value={guestContactNumber}
+              onChange={(event) => setGuestContactNumber(event.target.value)}
+              placeholder="Enter your phone number"
+              maxLength={30}
+              autoComplete="tel"
+            />
+          </label>
+
+          <label>
             Guest PIN
             <input
               type="password"
@@ -3845,7 +4126,7 @@ function App() {
               </div>
               <div>
                 <span>Final amount to pay</span>
-                <strong>{currency.format(guestOrdersTotal)}</strong>
+                <strong>{currency.format(guestAmountDue)}</strong>
               </div>
             </div>
 
@@ -3885,9 +4166,22 @@ function App() {
                   ))}
                 </ul>
 
-                <div className="guest-order-total">
-                  <span>Order total</span>
-                  <strong>{currency.format(order.total || 0)}</strong>
+                <div className="guest-order-settlement">
+                  <div>
+                    <span>Order total</span>
+                    <strong>{currency.format(order.total || 0)}</strong>
+                  </div>
+                  <div>
+                    <span>Paid</span>
+                    <strong>{currency.format(order.paid_amount || 0)}</strong>
+                  </div>
+                  <div>
+                    <span>Amount due</span>
+                    <strong>{currency.format(order.amount_due ?? order.total ?? 0)}</strong>
+                  </div>
+                  <span className={`status-badge ${order.payment_status || 'unpaid'}`}>
+                    {order.payment_status || 'unpaid'}
+                  </span>
                 </div>
 
                 {order.status === 'submitted' && (
@@ -3905,7 +4199,14 @@ function App() {
     </main>
   )
 
-  const renderStaffFlow = () => (
+  const renderStaffFlow = () => {
+    const billsForActiveOrderStatus = bills.filter((bill) =>
+      orders.some((order) => Number(order.id) === Number(bill.orderId)
+        && (order.status || 'submitted') === activeOrderTab),
+    )
+    const billGroupsForActiveOrderStatus = groupBillsByGuestDevice(billsForActiveOrderStatus)
+
+    return (
     <main className="staff-layout">
       <section className="panel wide-panel">
         <div className="panel-header">
@@ -4032,6 +4333,7 @@ function App() {
                       <div>
                         <strong>{order.customer || `Table ${order.table}`}</strong>
                         <span>{order.time} • Table {order.table}</span>
+                      {order.guestContactNumber && <span>Contact: {order.guestContactNumber}</span>}
                       </div>
                       <span className={`status-chip ${order.status}`}>{order.status}</span>
                     </div>
@@ -4073,31 +4375,46 @@ function App() {
             <section className="panel section-panel" style={{ marginTop: '1.5rem' }}>
               <div className="panel-header">
                 <h2>Branch bills</h2>
-                <span className="mini-tag">{bills.length}</span>
+                <span className="mini-tag">{billGroupsForActiveOrderStatus.length} devices</span>
               </div>
-              {bills.length === 0 ? (
-                <p className="empty-state">No bills for this branch yet.</p>
+              {billGroupsForActiveOrderStatus.length === 0 ? (
+                <p className="empty-state">No bills for {activeOrderTab} orders.</p>
               ) : (
-                <div className="stack-list">
-                  {bills.map((bill) => (
-                    <article className="bill-card" key={bill.id}>
-                      <div className="order-head">
-                        <strong>Bill #{bill.id}</strong>
-                        <span>{bill.table} · Order #{bill.orderId}</span>
+                <div className="bill-device-list">
+                  {billGroupsForActiveOrderStatus.map((group) => (
+                    <article className="bill-device-group" key={group.key}>
+                      <div className="bill-device-header">
+                        <div>
+                          <strong>{group.guestName || (group.guestSessionId ? `Guest device #${group.guestSessionId}` : 'Table guest')}</strong>
+                          {group.guestContactNumber && <span>{group.guestContactNumber}</span>}
+                          <span>{group.table} · {group.bills.length} {group.bills.length === 1 ? 'bill' : 'bills'}</span>
+                        </div>
+                        <div>
+                          <span>Device amount due</span>
+                          <strong>{currency.format(group.due)}</strong>
+                        </div>
                       </div>
-                      <p>Paid: {currency.format(bill.paid)} / {currency.format(bill.total)}</p>
-                      <div className="order-actions">
-                        <span className="status-badge">{bill.status}</span>
-                        {bill.status !== 'paid' && (
-                          <button
-                            type="button"
-                            className="small-button accent"
-                            onClick={() => void payBill(bill.id, bill.total - bill.paid, 'cash')}
-                          >
-                            Mark paid
-                          </button>
-                        )}
-                      </div>
+                      {group.bills.map((bill) => (
+                        <div className="bill-device-line" key={bill.id}>
+                          <span>Bill #{bill.id} · Order #{bill.orderId}</span>
+                          <span>{currency.format(bill.paid)} paid of {currency.format(bill.total)}</span>
+                          <span className="status-badge">{bill.status}</span>
+                          {bill.status !== 'paid' && (
+                            <button
+                              type="button"
+                              className="small-button accent"
+                              onClick={() => void payBill(bill.id, bill.total - bill.paid, 'cash')}
+                            >
+                              Mark paid
+                            </button>
+                          )}
+                          {canReverseBillPayment && bill.provider === 'cash' && bill.paid > 0 && (
+                            <button type="button" className="small-button" onClick={() => void reverseCashBillPayment(bill)}>
+                              Undo payment
+                            </button>
+                          )}
+                        </div>
+                      ))}
                     </article>
                   ))}
                 </div>
@@ -4107,7 +4424,8 @@ function App() {
         )}
       </section>
     </main>
-  )
+    )
+  }
 
   const renderRestaurantPublicPage = () => (
     <main className="restaurant-public-page" style={{ '--brand-accent': restaurantProfile.accentColor }}>
@@ -4177,11 +4495,9 @@ function App() {
   )
 
   const renderBillingFlow = () => {
-    const visibleBills = bills.filter((bill) => {
-      if (billingTab === 'paid') return bill.status === 'paid'
-      if (billingTab === 'cancelled') return bill.status === 'cancelled'
-      return ['pending', 'partial'].includes(bill.status)
-    })
+    const visibleBills = getBillsForBillingTab()
+    const visibleBillGroups = groupBillsByGuestDevice(visibleBills)
+    const pagination = getBillingPage(visibleBillGroups)
 
     return (
       <main className="billing-layout">
@@ -4197,66 +4513,81 @@ function App() {
                 key={tab}
                 type="button"
                 className={billingTab === tab ? 'tab active' : 'tab'}
-                onClick={() => setBillingTab(tab)}
+                onClick={() => { setBillingTab(tab); setBillingPage(1) }}
               >
                 {tab === 'paid' ? 'Paid orders' : tab === 'cancelled' ? 'Cancelled orders' : 'Pending orders'}
               </button>
             ))}
           </div>
 
-          <div className="billing-grid">
+          <div className="billing-list">
             {isLoadingOps && <p className="empty-state">Loading billing data...</p>}
             {visibleBills.length === 0 && !isLoadingOps && (
               <p className="empty-state">No {billingTab === 'paid' ? 'paid' : billingTab === 'cancelled' ? 'cancelled' : 'pending'} bills yet.</p>
             )}
-            {visibleBills.map((bill) => {
-              const remaining = Math.max(bill.total - bill.paid, 0)
-
-              return (
-                <article className="bill-card" key={bill.id}>
+            {pagination.pageBills.map((group) => (
+                <article className="bill-card bill-row bill-device-row" key={group.key}>
                   <div className="bill-topline">
                     <div>
-                      <strong>Bill #{bill.id}</strong>
-                      <span>Table {bill.table}</span>
+                      <strong>{group.guestName || (group.guestSessionId ? `Guest device #${group.guestSessionId}` : 'Table guest')}</strong>
+                      {group.guestContactNumber && <span>{group.guestContactNumber}</span>}
+                      <span>{group.table} · {group.bills.length} {group.bills.length === 1 ? 'bill' : 'bills'}</span>
                     </div>
-                    <span className={`status-chip ${bill.status}`}>{bill.status}</span>
+                    <span className="status-chip">{billingTab}</span>
                   </div>
 
                   <div className="bill-metrics">
                     <div>
                       <label>Total</label>
-                      <strong>{currency.format(bill.total)}</strong>
+                      <strong>{currency.format(group.total)}</strong>
                     </div>
                     <div>
                       <label>Paid</label>
-                      <strong>{currency.format(bill.paid)}</strong>
+                      <strong>{currency.format(group.paid)}</strong>
                     </div>
                     <div>
-                      <label>Remaining</label>
-                      <strong>{currency.format(remaining)}</strong>
+                      <label>Device amount due</label>
+                      <strong>{currency.format(group.due)}</strong>
                     </div>
                   </div>
 
-                  {billingTab !== 'paid' && (
-                    <div className="payment-actions">
-                      <button type="button" className="small-button" onClick={() => void payBill(bill.id, remaining, 'cash', 'cash')}>
-                        Pay cash
-                      </button>
-                      <button type="button" className="small-button" onClick={() => void payBill(bill.id, remaining, 'upi', 'mock')}>
-                        Pay UPI
-                      </button>
-                      <button type="button" className="small-button" onClick={() => void payBill(bill.id, remaining, 'card', 'mock')}>
-                        Pay card
-                      </button>
-                      <button type="button" className="small-button accent" onClick={() => void payBill(bill.id, remaining, 'card', 'razorpay')}>
-                        Pay online
-                      </button>
-                    </div>
-                  )}
+                  <div className="bill-device-invoices">
+                    {group.bills.map((bill) => {
+                      const remaining = Math.max(bill.total - bill.paid, 0)
+
+                      return (
+                        <div className="bill-device-line" key={bill.id}>
+                          <span>{bill.isOrderOnly ? `Cancelled order #${bill.orderId}` : `Bill #${bill.id} · Order #${bill.orderId}`}</span>
+                          <span>{bill.isOrderOnly ? `Order total ${currency.format(bill.total)}` : `${currency.format(bill.paid)} paid of ${currency.format(bill.total)}`}</span>
+                          {billingTab === 'pending' && !bill.isOrderOnly && (
+                            <div className="payment-actions">
+                              <button type="button" className="small-button" onClick={() => void payBill(bill.id, remaining, 'cash', 'cash')}>
+                                Pay cash
+                              </button>
+                              <button type="button" className="small-button" onClick={() => void payBill(bill.id, remaining, 'upi', 'mock')}>
+                                Pay UPI
+                              </button>
+                              <button type="button" className="small-button" onClick={() => void payBill(bill.id, remaining, 'card', 'mock')}>
+                                Pay card
+                              </button>
+                              <button type="button" className="small-button accent" onClick={() => void payBill(bill.id, remaining, 'card', 'razorpay')}>
+                                Pay online
+                              </button>
+                            </div>
+                          )}
+                          {canReverseBillPayment && bill.provider === 'cash' && bill.paid > 0 && (
+                            <button type="button" className="small-button" onClick={() => void reverseCashBillPayment(bill)}>
+                              Undo payment
+                            </button>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
                 </article>
-              )
-            })}
+            ))}
           </div>
+          {visibleBillGroups.length > billsPerPage && renderBillingPagination({ ...pagination, total: visibleBillGroups.length })}
         </section>
       </main>
     )
@@ -4338,6 +4669,89 @@ function App() {
         if (view === 'billing') return renderBillingFlow()
         return renderAdminFlow()
       })()}
+
+      {editingStaffId !== null && typeof document !== 'undefined' && createPortal((
+        <div className="modal-backdrop" onClick={() => setEditingStaffId(null)}>
+          <section
+            className="modal-card staff-edit-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="edit-staff-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="panel-header compact">
+              <div>
+                <h2 id="edit-staff-title">Edit employee</h2>
+                <p>Update this employee’s account and restaurant access.</p>
+              </div>
+              <button type="button" className="small-button" onClick={() => setEditingStaffId(null)}>Close</button>
+            </div>
+
+            <form className="staff-edit-form" onSubmit={(event) => { event.preventDefault(); void saveStaffMember() }}>
+              <label>
+                Full name
+                <input
+                  type="text"
+                  value={staffDraft.name}
+                  onChange={(event) => setStaffDraft((current) => ({ ...current, name: event.target.value }))}
+                  autoFocus
+                  required
+                />
+              </label>
+              <label>
+                Email address
+                <input
+                  type="email"
+                  value={staffDraft.email}
+                  onChange={(event) => setStaffDraft((current) => ({ ...current, email: event.target.value }))}
+                  required
+                />
+              </label>
+              <label>
+                Role
+                <select value={staffDraft.role} onChange={(event) => setStaffDraft((current) => ({ ...current, role: event.target.value }))}>
+                  {!['Waiter', 'Chef', 'Manager', 'Branch Admin'].includes(staffDraft.role) && <option value={staffDraft.role}>{staffDraft.role}</option>}
+                  <option value="Waiter">Waiter</option>
+                  <option value="Chef">Chef</option>
+                  <option value="Manager">Manager</option>
+                  <option value="Branch Admin">Branch Admin</option>
+                </select>
+              </label>
+              <label>
+                Branch access
+                <select value={staffDraft.branchId} onChange={(event) => setStaffDraft((current) => ({ ...current, branchId: event.target.value }))}>
+                  <option value="">All branches</option>
+                  {availableBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
+                </select>
+              </label>
+              <label>
+                Account status
+                <select value={staffDraft.status} onChange={(event) => setStaffDraft((current) => ({ ...current, status: event.target.value }))}>
+                  <option value="active">Active</option>
+                  <option value="inactive">Inactive</option>
+                </select>
+              </label>
+              <label>
+                New password <span className="form-hint">Leave blank to keep the current password</span>
+                <input
+                  type="password"
+                  value={staffDraft.password}
+                  onChange={(event) => setStaffDraft((current) => ({ ...current, password: event.target.value }))}
+                  minLength="8"
+                  autoComplete="new-password"
+                />
+              </label>
+              {staffEditError && <p className="message error staff-edit-error">{staffEditError}</p>}
+              <div className="staff-edit-actions">
+                <button type="button" className="small-button secondary-button" onClick={() => setEditingStaffId(null)}>Cancel</button>
+                <button type="submit" className="primary-button" disabled={isSavingStaff}>
+                  {isSavingStaff ? 'Saving...' : 'Save changes'}
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+      ), document.body)}
     </div>
   )
 }

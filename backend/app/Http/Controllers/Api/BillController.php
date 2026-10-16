@@ -21,7 +21,8 @@ class BillController extends Controller
 
         abort_unless(request()->user()->canManageRestaurantOrders($restaurant), 403, 'You are not allowed to view bills for this restaurant.');
 
-        $bills = Bill::whereIn('branch_id', $restaurant->branches()->select('id'))
+        $bills = Bill::with(['order:id,guest_session_id,status', 'order.guestSession:id,name,contact_number'])
+            ->whereIn('branch_id', $restaurant->branches()->select('id'))
             ->orderByDesc('created_at')
             ->get();
 
@@ -31,10 +32,15 @@ class BillController extends Controller
                     'id' => $bill->id,
                     'table' => 'T-' . ($bill->table_id ?? 'N/A'),
                     'orderId' => $bill->order_id,
+                    'order_status' => $bill->order?->status,
+                    'guest_session_id' => $bill->order?->guest_session_id,
+                    'guest_name' => $bill->order?->guestSession?->name,
+                    'guest_contact_number' => $bill->order?->guestSession?->contact_number,
                     'total' => (float) $bill->total_amount,
                     'paid' => (float) $bill->paid_amount,
                     'status' => $bill->status ?? 'pending',
                     'method' => $bill->payment_method ?? 'cash',
+                    'provider' => $bill->payment_provider,
                 ];
             })->all(),
         ]);
@@ -59,6 +65,8 @@ class BillController extends Controller
                 'table_id' => $order->table_id,
                 'table_session_id' => $order->table_session_id,
                 'order_id' => $order->id,
+                'order_status' => $order->status,
+                'guest_session_id' => $order->guest_session_id,
                 'total_amount' => $order->total_amount,
                 'paid_amount' => 0,
                 'status' => 'pending',
@@ -69,6 +77,8 @@ class BillController extends Controller
             'data' => [
                 'id' => $bill->id,
                 'order_id' => $order->id,
+                'guest_name' => $order->guestSession?->name,
+                'guest_contact_number' => $order->guestSession?->contact_number,
                 'total_amount' => (float) $bill->total_amount,
                 'status' => $bill->status,
             ],
@@ -124,6 +134,37 @@ class BillController extends Controller
                 'total_amount' => (float) $bill->total_amount,
                 'payment_provider' => $bill->payment_provider,
                 'payment_reference' => $bill->payment_reference,
+            ],
+        ]);
+    }
+
+    public function reverseCashPayment(Request $request, Restaurant $restaurant, Branch $branch, Bill $bill)
+    {
+        if ($restaurant->id !== $branch->restaurant_id || ! $restaurant->branches()->whereKey($bill->branch_id)->exists()) {
+            abort(403, 'Bill does not belong to this restaurant.');
+        }
+
+        abort_unless((int) $request->user()->id === (int) $restaurant->owner_id, 403, 'Only the restaurant owner can undo a payment.');
+
+        if (strtolower((string) $bill->payment_provider) !== 'cash' || (float) $bill->paid_amount <= 0) {
+            abort(422, 'Only cash payments recorded by staff can be undone here. Payments through a payment provider must be refunded there.');
+        }
+
+        $bill->paid_amount = 0;
+        $bill->status = 'pending';
+        $bill->payment_method = null;
+        $bill->payment_provider = null;
+        $bill->payment_reference = null;
+        $bill->save();
+
+        return response()->json([
+            'data' => [
+                'id' => $bill->id,
+                'status' => $bill->status,
+                'paid_amount' => (float) $bill->paid_amount,
+                'total_amount' => (float) $bill->total_amount,
+                'payment_method' => null,
+                'payment_provider' => null,
             ],
         ]);
     }

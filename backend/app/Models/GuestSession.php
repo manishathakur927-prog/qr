@@ -17,6 +17,8 @@ class GuestSession extends Model
         'restaurant_id',
         'branch_id',
         'guest_token',
+        'name',
+        'contact_number',
         'status',
         'started_at',
         'ended_at',

@@ -19,14 +19,14 @@ class KitchenOrderController extends Controller
         abort_unless(request()->user()->canManageRestaurantOrders($restaurant), 403, 'You are not allowed to view orders for this restaurant.');
 
         $orders = Order::whereIn('branch_id', $restaurant->branches()->select('id'))
-            ->with('items.menuItem')
+            ->with(['items.menuItem', 'guestSession:id,name,contact_number'])
             ->orderByDesc('created_at')
             ->get();
 
         return response()->json([
             'data' => $orders->map(function (Order $order) {
                 $customerLabel = $order->guest_session_id
-                    ? 'Guest #' . $order->guest_session_id
+                    ? ($order->guestSession?->name ?: 'Guest #' . $order->guest_session_id)
                     : 'Table ' . ($order->table_id ?? 'N/A');
 
                 return [
@@ -35,6 +35,8 @@ class KitchenOrderController extends Controller
                     'customer' => $customerLabel,
                     'customer_id' => $order->guest_session_id ?? $order->table_id,
                     'guest_session_id' => $order->guest_session_id,
+                    'guest_name' => $order->guestSession?->name,
+                    'guest_contact_number' => $order->guestSession?->contact_number,
                     'time' => $order->created_at?->format('h:i A'),
                     'items' => $order->items
                         ->map(fn ($item) => $item->menuItem?->name ?? 'Menu item')

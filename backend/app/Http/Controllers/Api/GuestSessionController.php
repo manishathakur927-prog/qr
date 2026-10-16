@@ -19,6 +19,8 @@ class GuestSessionController extends Controller
         $validated = $request->validate([
             'table_id' => ['required', 'exists:dining_tables,id'],
             'pin' => ['required', 'string'],
+            'name' => ['required', 'string', 'max:120'],
+            'contact_number' => ['nullable', 'string', 'max:30'],
             'guest_session_id' => ['nullable', 'exists:guest_sessions,id'],
             'guest_session_token' => ['nullable', 'string', 'max:255'],
         ]);
@@ -92,6 +94,12 @@ class GuestSessionController extends Controller
             ]);
         }
 
+        $guestSession->name = trim($validated['name']);
+        $guestSession->contact_number = isset($validated['contact_number'])
+            ? trim($validated['contact_number']) ?: null
+            : null;
+        $guestSession->save();
+
         $currentOrder = Order::with('items.menuItem')
             ->where('guest_session_id', $guestSession->id)
             ->whereIn('status', ['submitted', 'preparing', 'ready', 'served'])
@@ -132,6 +140,8 @@ class GuestSessionController extends Controller
                 'session_id' => $session->id,
                 'guest_session_id' => $guestSession->id,
                 'guest_session_token' => $guestSession->guest_token,
+                'guest_name' => $guestSession->name,
+                'guest_contact_number' => $guestSession->contact_number,
                 'table_id' => $table->id,
                 'status' => 'joined',
                 'restaurant' => $restaurant ? [

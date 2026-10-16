@@ -15,25 +15,47 @@ use Illuminate\Validation\Rule;
 
 class TableController extends Controller
 {
-    public function index(Restaurant $restaurant, Branch $branch)
+    public function index(Request $request, Restaurant $restaurant, Branch $branch)
     {
         if ($restaurant->id !== $branch->restaurant_id) {
             abort(403, 'Branch does not belong to this restaurant.');
         }
 
-        Gate::authorize('manage-restaurant', $restaurant);
+        $user = $request->user();
+        $hasBranchAccess = $user->isSuperAdmin()
+            || (int) $user->id === (int) $restaurant->owner_id
+            || $user->memberships()
+                ->where('restaurant_id', $restaurant->id)
+                ->where('status', 'active')
+                ->where(function ($query) use ($branch) {
+                    $query->whereNull('branch_id')->orWhere('branch_id', $branch->id);
+                })
+                ->exists();
+
+        abort_unless($hasBranchAccess, 403, 'You are not allowed to view tables for this branch.');
 
         $tables = $branch->diningTables()->orderBy('id')->get();
+        $latestSessionIds = TableSession::selectRaw('MAX(id)')
+            ->whereIn('table_id', $tables->pluck('id'))
+            ->groupBy('table_id');
+        $latestSessions = TableSession::whereIn('id', $latestSessionIds)
+            ->get(['id', 'table_id', 'status', 'opened_at'])
+            ->keyBy('table_id');
 
         return response()->json([
-            'data' => $tables->map(fn ($table) => [
-                'id' => $table->id,
-                'table_number' => $table->table_number,
-                'name' => $table->name,
-                'section' => $table->section,
-                'capacity' => (int) $table->capacity,
-                'status' => $table->status,
-            ]),
+            'data' => $tables->map(function ($table) use ($latestSessions) {
+                $latestSession = $latestSessions->get($table->id);
+
+                return [
+                    'id' => $table->id,
+                    'table_number' => $table->table_number,
+                    'name' => $table->name,
+                    'section' => $table->section,
+                    'capacity' => (int) $table->capacity,
+                    'status' => $latestSession?->status === 'open' ? 'occupied' : 'available',
+                    'session_status' => $latestSession?->status,
+                ];
+            }),
         ]);
     }
 

@@ -9,6 +9,8 @@ use App\Models\Role;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Validation\Rule;
+use Illuminate\Support\Str;
 
 class MembershipController extends Controller
 {
@@ -88,5 +90,76 @@ class MembershipController extends Controller
         return response()->json([
             'data' => $membership,
         ], 201);
+    }
+
+    public function update(Request $request, Restaurant $restaurant, Membership $membership)
+    {
+        $user = $request->user();
+
+        if (! $user || (! $user->isSuperAdmin() && $user->id !== $restaurant->owner_id)) {
+            abort(403, 'You are not allowed to edit this restaurant staff member.');
+        }
+
+        if ($membership->restaurant_id !== $restaurant->id) {
+            abort(404, 'Staff membership not found for this restaurant.');
+        }
+
+        $validated = $request->validate([
+            'name' => ['sometimes', 'required', 'string', 'max:255'],
+            'email' => ['sometimes', 'required', 'email', 'max:255', Rule::unique('users', 'email')->ignore($membership->user_id)],
+            'role' => ['sometimes', 'required', 'string', 'max:255'],
+            'status' => ['sometimes', 'required', 'in:active,inactive'],
+            'branch_id' => ['sometimes', 'nullable', 'exists:branches,id'],
+            'password' => ['sometimes', 'nullable', 'string', 'min:8'],
+        ]);
+
+        if (array_key_exists('branch_id', $validated) && ! empty($validated['branch_id'])
+            && ! $restaurant->branches()->whereKey($validated['branch_id'])->exists()) {
+            abort(403, 'Branch does not belong to this restaurant.');
+        }
+
+        $staffUser = User::findOrFail($membership->user_id);
+        $staffUser->fill(array_intersect_key($validated, array_flip(['name', 'email'])));
+        if (! empty($validated['password'])) {
+            $staffUser->password = $validated['password'];
+        }
+        $staffUser->save();
+
+        if (array_key_exists('role', $validated)) {
+            $roleName = trim($validated['role']);
+            $role = Role::where('restaurant_id', $restaurant->id)
+                ->whereRaw('LOWER(name) = ?', [mb_strtolower($roleName)])
+                ->first();
+
+            if (! $role) {
+                $role = Role::create([
+                    'restaurant_id' => $restaurant->id,
+                    'name' => $roleName,
+                    'slug' => Str::slug($roleName) . '-' . $restaurant->id . '-' . Str::lower(Str::random(6)),
+                    'description' => $roleName . ' role for this restaurant.',
+                ]);
+            }
+
+            $membership->role_id = $role->id;
+        }
+
+        if (array_key_exists('status', $validated)) {
+            $membership->status = $validated['status'];
+        }
+        if (array_key_exists('branch_id', $validated)) {
+            $membership->branch_id = $validated['branch_id'] ?: null;
+        }
+        $membership->save();
+
+        return response()->json([
+            'data' => [
+                'id' => $membership->id,
+                'user_id' => $staffUser->id,
+                'user' => ['id' => $staffUser->id, 'name' => $staffUser->name, 'email' => $staffUser->email],
+                'role' => $membership->role()->first(['id', 'name', 'slug']),
+                'branch' => $membership->branch()->first(['id', 'name']),
+                'status' => $membership->status,
+            ],
+        ]);
     }
 }

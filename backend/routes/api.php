@@ -46,6 +46,7 @@ Route::middleware('auth:sanctum')->prefix('v1')->group(function () {
     Route::post('/restaurants/{restaurant}/roles', [RoleController::class, 'store']);
     Route::get('/restaurants/{restaurant}/memberships', [MembershipController::class, 'index']);
     Route::post('/restaurants/{restaurant}/memberships', [MembershipController::class, 'store']);
+    Route::patch('/restaurants/{restaurant}/memberships/{membership}', [MembershipController::class, 'update']);
     Route::get('/restaurants/{restaurant}/branches/{branch}/categories', [CategoryController::class, 'index']);
     Route::post('/restaurants/{restaurant}/branches/{branch}/categories', [CategoryController::class, 'store']);
     Route::get('/restaurants/{restaurant}/branches/{branch}/items', [MenuItemController::class, 'index']);
@@ -60,4 +61,5 @@ Route::middleware('auth:sanctum')->prefix('v1')->group(function () {
     Route::post('/restaurants/{restaurant}/branches/{branch}/orders/{order}/bill', [BillController::class, 'store']);
     Route::get('/restaurants/{restaurant}/branches/{branch}/bills', [BillController::class, 'index']);
     Route::patch('/restaurants/{restaurant}/branches/{branch}/bills/{bill}/pay', [BillController::class, 'pay']);
+    Route::patch('/restaurants/{restaurant}/branches/{branch}/bills/{bill}/reverse-cash-payment', [BillController::class, 'reverseCashPayment']);
 });

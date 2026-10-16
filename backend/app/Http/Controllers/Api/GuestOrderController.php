@@ -45,7 +45,7 @@ class GuestOrderController extends Controller
                 ->first();
         }
 
-        $query = Order::with(['items.menuItem'])
+        $query = Order::with(['items.menuItem', 'bill'])
             ->where('table_id', $validated['table_id'])
             ->orderByDesc('created_at');
 
@@ -61,6 +61,9 @@ class GuestOrderController extends Controller
                     'id' => $order->id,
                     'status' => $order->status,
                     'total' => (float) $order->total_amount,
+                    'paid_amount' => (float) ($order->bill?->paid_amount ?? 0),
+                    'amount_due' => max((float) $order->total_amount - (float) ($order->bill?->paid_amount ?? 0), 0),
+                    'payment_status' => $order->bill?->status ?? 'unpaid',
                     'created_at' => $order->created_at?->toISOString(),
                     'items' => $order->items->map(function ($item) {
                         return [
