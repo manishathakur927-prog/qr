@@ -23,33 +23,22 @@ ENV APP_ENV=production \
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        libcurl4-openssl-dev \
         libfreetype6-dev \
         libicu-dev \
         libjpeg62-turbo-dev \
-        libonig-dev \
         libpng-dev \
         libwebp-dev \
-        libxml2-dev \
         libzip-dev \
         passwd \
     && docker-php-ext-configure gd --with-freetype --with-jpeg --with-webp \
     && docker-php-ext-install -j2 \
         bcmath \
-        curl \
-        dom \
         exif \
-        fileinfo \
         gd \
         intl \
-        mbstring \
-        opcache \
         pdo_mysql \
-        simplexml \
-        xml \
-        xmlreader \
-        xmlwriter \
         zip \
+    && php -r 'foreach (["bcmath", "curl", "dom", "exif", "fileinfo", "gd", "intl", "mbstring", "opcache", "pdo_mysql", "simplexml", "xml", "xmlreader", "xmlwriter", "zip"] as $extension) { if (! extension_loaded($extension)) { fwrite(STDERR, "Missing PHP extension: {$extension}\\n"); exit(1); } }' \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=composer-bin /usr/bin/composer /usr/local/bin/composer
