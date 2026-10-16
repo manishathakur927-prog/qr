@@ -27,6 +27,7 @@ const currency = new Intl.NumberFormat('en-IN', {
 const billsPerPage = 10
 
 const razorpayKeyId = import.meta.env.VITE_RAZORPAY_KEY_ID || ''
+const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '')
 
 async function requestJson(url, options = {}, token = '') {
   const headers = {
@@ -39,7 +40,8 @@ async function requestJson(url, options = {}, token = '') {
     headers.Authorization = `Bearer ${token}`
   }
 
-  const response = await fetch(url, {
+  const apiUrl = /^https?:\/\//i.test(url) ? url : `${apiBaseUrl}${url.startsWith('/') ? url : `/${url}`}`
+  const response = await fetch(apiUrl, {
     ...options,
     headers,
   })
