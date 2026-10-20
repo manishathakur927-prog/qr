@@ -15,6 +15,7 @@ use App\Http\Controllers\Api\TableController;
 use Illuminate\Support\Facades\Route;
 
 Route::prefix('v1')->group(function () {
+    Route::get('/guest/menu', [GuestSessionController::class, 'menu']);
     Route::post('/guest/join-session', [GuestSessionController::class, 'join']);
     Route::get('/guest/orders', [GuestOrderController::class, 'index']);
     Route::post('/guest/orders', [GuestOrderController::class, 'store']);

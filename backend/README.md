@@ -9,6 +9,27 @@
 
 ## About Laravel
 
+## Running under XAMPP at `/backend`
+
+Place this project folder at `C:\xampp\htdocs\backend` (Windows) or in
+XAMPP's `htdocs/backend` directory on your platform. The root `.htaccess`
+forwards requests to Laravel's `public/index.php` while allowing built assets
+through, so the app can be opened at `http://localhost/backend/` without
+changing Apache's document root. Ensure Apache has `mod_rewrite` enabled and
+allows `.htaccess` overrides (`AllowOverride All`).
+
+From this directory, install PHP dependencies with `composer install`, create
+`.env` from `.env.example` if needed, then set `APP_URL=http://localhost/backend`
+and `ASSET_URL=http://localhost/backend`
+and configure `DB_CONNECTION=mysql`, `DB_HOST=127.0.0.1`, `DB_PORT=3306`,
+`DB_DATABASE`, `DB_USERNAME`, and `DB_PASSWORD` for a database created in
+phpMyAdmin. Generate the application key with `php artisan key:generate`, run
+`php artisan migrate`, and build frontend assets with `npm install` followed by
+`npm run build`. Make `storage` and `bootstrap/cache` writable by Apache.
+
+If using the repository in its current nested location under `htdocs/qr`, its
+URL will instead be `http://localhost/qr/backend/`.
+
 Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
 
 - [Simple, fast routing engine](https://laravel.com/docs/routing).

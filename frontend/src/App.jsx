@@ -27,12 +27,24 @@ const currency = new Intl.NumberFormat('en-IN', {
 const billsPerPage = 10
 
 const razorpayKeyId = import.meta.env.VITE_RAZORPAY_KEY_ID || ''
-const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '')
+const apiBaseUrl = (
+  import.meta.env.VITE_API_BASE_URL || 'https://qa.myalf.palsitecare.com/backend/public/index.php'
+).replace(/\/+$/, '')
+
+function readImageAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result || ''))
+    reader.onerror = () => reject(new Error('Could not read the selected image.'))
+    reader.readAsDataURL(file)
+  })
+}
 
 async function requestJson(url, options = {}, token = '') {
+  const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData
   const headers = {
     Accept: 'application/json',
-    ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+    ...(options.body && !isFormData ? { 'Content-Type': 'application/json' } : {}),
     ...(options.headers || {}),
   }
 
@@ -83,15 +95,20 @@ function App() {
   const [joined, setJoined] = useState(false)
   const [error, setError] = useState('')
   const [confirmation, setConfirmation] = useState('')
+  const [cartMessage, setCartMessage] = useState('')
+  const [isCartOpen, setIsCartOpen] = useState(false)
   const [isJoining, setIsJoining] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [cart, setCart] = useState({})
   const [view, setView] = useState('home')
   const [activeAdminSection, setActiveAdminSection] = useState('overview')
+  const [isAdminMenuOpen, setIsAdminMenuOpen] = useState(false)
+  const [isMainMenuOpen, setIsMainMenuOpen] = useState(false)
   const [orders, setOrders] = useState([])
   const [bills, setBills] = useState([])
   const [opsLoadError, setOpsLoadError] = useState('')
   const [guestOrders, setGuestOrders] = useState([])
+  const [isLoadingGuestMenu, setIsLoadingGuestMenu] = useState(false)
   const [billingTab, setBillingTab] = useState('pending')
   const [billingPage, setBillingPage] = useState(1)
   const [activeOrderTab, setActiveOrderTab] = useState('submitted')
@@ -104,14 +121,19 @@ function App() {
   const [ownerConfirmPassword, setOwnerConfirmPassword] = useState('secure123')
   const [staffToken, setStaffToken] = useState(() => {
     try {
-      return localStorage.getItem('staffToken') || ''
+      const token = localStorage.getItem('staffToken') || ''
+      return token === 'null' || token === 'undefined' ? '' : token
     } catch {
       return ''
     }
   })
   const [staffUser, setStaffUser] = useState(() => {
     try {
+      const token = localStorage.getItem('staffToken')
       const storedUser = localStorage.getItem('staffUser')
+      if (!token || token === 'null' || token === 'undefined') {
+        return null
+      }
       return storedUser ? JSON.parse(storedUser) : null
     } catch {
       return null
@@ -165,6 +187,7 @@ function App() {
   const [qrTableId, setQrTableId] = useState('')
   const [qrToken, setQrToken] = useState('')
   const [qrImageUrl, setQrImageUrl] = useState('')
+  const [qrGuestUrl, setQrGuestUrl] = useState('')
   const [isGeneratingQr, setIsGeneratingQr] = useState(false)
   const [restaurantTables, setRestaurantTables] = useState([])
   const [platformRestaurants, setPlatformRestaurants] = useState([])
@@ -244,7 +267,9 @@ function App() {
     price: '',
     description: '',
     badge: 'Popular',
+    image_url: '',
   })
+  const [newMenuItemImage, setNewMenuItemImage] = useState(null)
   const [restaurantShareUrl, setRestaurantShareUrl] = useState('')
   const [restaurantPageMessage, setRestaurantPageMessage] = useState('')
   const [editingStaffId, setEditingStaffId] = useState(null)
@@ -254,12 +279,35 @@ function App() {
   const [editingTableId, setEditingTableId] = useState(null)
   const [tableDraft, setTableDraft] = useState({ table_number: '', name: '', section: '', capacity: '2', status: 'available' })
   const [editingMenuItemId, setEditingMenuItemId] = useState(null)
-  const [menuItemDraft, setMenuItemDraft] = useState({ name: '', category: 'Mains', price: '', description: '', badge: 'Popular' })
+  const [menuItemDraft, setMenuItemDraft] = useState({ name: '', category: 'Mains', price: '', description: '', badge: 'Popular', image_url: '' })
   const [editingCategoryName, setEditingCategoryName] = useState('')
   const [categoryDraft, setCategoryDraft] = useState('')
 
   const cartItems = Object.values(cart)
+  const cartUnitCount = cartItems.reduce((sum, item) => sum + Number(item.quantity || 0), 0)
   const guestMenuItems = restaurantMenu
+  useEffect(() => {
+    if (!cartMessage) return undefined
+    const timeoutId = window.setTimeout(() => setCartMessage(''), 2600)
+    return () => window.clearTimeout(timeoutId)
+  }, [cartMessage])
+
+  useEffect(() => {
+    if (!isCartOpen) return undefined
+
+    const previousOverflow = document.body.style.overflow
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') setIsCartOpen(false)
+    }
+
+    document.body.style.overflow = 'hidden'
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [isCartOpen])
+
   const isSuperAdmin = Boolean(staffUser?.is_super_admin)
   const activeUserRole = String(staffUser?.role_name || staffUser?.role || (isSuperAdmin ? 'Super Admin' : '')).trim()
   const canManageRestaurantOperations = Boolean(
@@ -320,6 +368,34 @@ function App() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
+    const qrTable = params.get('table') || params.get('table_id')
+    const qrPin = params.get('pin')
+
+    if (qrTable && qrPin) {
+      setView('guest')
+      setTableId(qrTable)
+      setPin(qrPin)
+      setIsLoadingGuestMenu(true)
+
+      const query = new URLSearchParams({ table_id: qrTable, pin: qrPin })
+      requestJson(`/api/v1/guest/menu?${query.toString()}`)
+        .then((response) => {
+          const items = Array.isArray(response?.data?.menu_items) ? response.data.menu_items : []
+          setRestaurantMenu(items)
+          if (response?.data?.restaurant?.name) {
+            setRestaurantProfile((current) => ({
+              ...current,
+              name: response.data.restaurant.name,
+              tagline: `${response.data.restaurant.name} dining experience`,
+            }))
+          }
+        })
+        .catch((menuError) => {
+          setError(menuError.message || 'Could not load the menu for this table.')
+        })
+        .finally(() => setIsLoadingGuestMenu(false))
+    }
+
     if (params.get('hotelPage')) {
       setView('restaurant')
     }
@@ -330,15 +406,55 @@ function App() {
 
       if ((!storedToken || storedToken === 'null' || storedToken === 'undefined') && storedUser) {
         localStorage.removeItem('staffUser')
+        setStaffUser(null)
       }
 
       if (storedToken === 'null' || storedToken === 'undefined') {
         localStorage.removeItem('staffToken')
+        setStaffToken('')
       }
     } catch {
       // Ignore storage errors.
     }
   }, [])
+
+  useEffect(() => {
+    if (!staffToken) {
+      return
+    }
+
+    let isCurrent = true
+
+    requestJson('/api/v1/auth/user', {}, staffToken)
+      .then((response) => {
+        if (isCurrent && response?.data) {
+          setStaffUser(response.data)
+        }
+      })
+      .catch(() => {
+        if (!isCurrent) {
+          return
+        }
+
+        setStaffToken('')
+        setStaffUser(null)
+        setSuperAdminSession(null)
+        setImpersonatedRestaurant(null)
+        setStaffAuthError('Your session expired. Please log in again.')
+        try {
+          localStorage.removeItem('staffToken')
+          localStorage.removeItem('staffUser')
+          localStorage.removeItem('superAdminSession')
+          localStorage.removeItem('impersonatedRestaurant')
+        } catch {
+          // Ignore storage errors.
+        }
+      })
+
+    return () => {
+      isCurrent = false
+    }
+  }, [staffToken])
 
   useEffect(() => {
     try {
@@ -652,6 +768,7 @@ function App() {
               price: Number(item.unit_price || item.price || 0),
               description: item.description || '',
               badge: item.badge || 'Popular',
+              image_url: item.image_url || '',
             },
             quantity: Number(item.quantity || 0),
           }
@@ -704,6 +821,7 @@ function App() {
         },
       }
     })
+    setCartMessage(`${menuItem.name} added to your order.`)
   }
 
   const removeItem = (menuItemId) => {
@@ -761,7 +879,9 @@ function App() {
       })
 
       setConfirmation('Order submitted successfully. Chef is preparing it now.')
+      setCartMessage('Order submitted successfully. Chef is preparing it now.')
       setCart({})
+      setIsCartOpen(false)
       await fetchGuestOrders(tableId, sessionId, guestSessionId)
     } catch (submitError) {
       setError(submitError.message)
@@ -1004,7 +1124,7 @@ function App() {
   }, [staffToken, isSuperAdmin, view])
 
   useEffect(() => {
-    if (view !== 'staff' && view !== 'billing' && view !== 'admin') {
+    if (!staffToken || (view !== 'staff' && view !== 'billing' && view !== 'admin')) {
       return
     }
 
@@ -1419,6 +1539,7 @@ function App() {
       price: String(item.price || 0),
       description: item.description || '',
       badge: item.badge || 'Popular',
+      image_url: item.image_url || '',
     })
   }
 
@@ -1439,6 +1560,7 @@ function App() {
               description: menuItemDraft.description.trim() || item.description,
               badge: menuItemDraft.badge || item.badge || 'Popular',
               price: Number(menuItemDraft.price || 0),
+              image_url: menuItemDraft.image_url.trim() || item.image_url || '',
             }
           : item,
       ),
@@ -1446,7 +1568,7 @@ function App() {
 
     setMenuCategories((current) => (current.includes(category) ? current : [...current, category]))
     setEditingMenuItemId(null)
-    setMenuItemDraft({ name: '', category: 'Mains', price: '', description: '', badge: 'Popular' })
+    setMenuItemDraft({ name: '', category: 'Mains', price: '', description: '', badge: 'Popular', image_url: '' })
   }
 
   const deleteMenuItem = (id) => {
@@ -1462,7 +1584,7 @@ function App() {
     setRestaurantMenu((current) => current.filter((item) => item.id !== id))
     if (editingMenuItemId === id) {
       setEditingMenuItemId(null)
-      setMenuItemDraft({ name: '', category: 'Mains', price: '', description: '', badge: 'Popular' })
+      setMenuItemDraft({ name: '', category: 'Mains', price: '', description: '', badge: 'Popular', image_url: '' })
     }
   }
 
@@ -1538,6 +1660,10 @@ function App() {
       setRestaurantPageMessage('Please add a menu item name and price.')
       return
     }
+    if (newMenuItemImage && newMenuItemImage.size > 5 * 1024 * 1024) {
+      setRestaurantPageMessage('Choose an image smaller than 5 MB.')
+      return
+    }
 
     const normalizedCategory = newMenuItem.category.trim() || 'Mains'
     const priceValue = Number(newMenuItem.price)
@@ -1547,6 +1673,7 @@ function App() {
       price: Number.isFinite(priceValue) ? priceValue : 0,
       description: newMenuItem.description.trim() || 'Freshly made to order.',
       badge: newMenuItem.badge || 'Popular',
+      image_url: newMenuItem.image_url.trim(),
     }
 
     if (staffToken) {
@@ -1555,15 +1682,24 @@ function App() {
         const activeRestaurantId = context.restaurantId || restaurantId || '1'
         const activeBranchId = context.branchId || branchId || '1'
 
+        const menuPayload = {
+          ...baseItem,
+          currency: 'INR',
+          status: 'active',
+        }
+        let requestBody = JSON.stringify(menuPayload)
+        if (newMenuItemImage) {
+          const formData = new FormData()
+          Object.entries(menuPayload).forEach(([key, value]) => formData.append(key, String(value ?? '')))
+          formData.append('image', newMenuItemImage)
+          requestBody = formData
+        }
+
         const response = await requestJson(
           `/api/v1/restaurants/${activeRestaurantId}/branches/${activeBranchId}/items`,
           {
             method: 'POST',
-            body: JSON.stringify({
-              ...baseItem,
-              currency: 'INR',
-              status: 'active',
-            }),
+            body: requestBody,
           },
           staffToken,
         )
@@ -1576,6 +1712,7 @@ function App() {
           price: Number(createdItem?.price ?? baseItem.price),
           description: createdItem?.description || baseItem.description,
           badge: createdItem?.badge || baseItem.badge,
+          image_url: createdItem?.image_url || baseItem.image_url,
         }
 
         setMenuCategories((current) => {
@@ -1592,11 +1729,23 @@ function App() {
           price: '',
           description: '',
           badge: 'Popular',
+          image_url: '',
         })
+        setNewMenuItemImage(null)
         setRestaurantPageMessage('Menu item added successfully.')
         return
       } catch (menuError) {
         setRestaurantPageMessage(menuError.message)
+        return
+      }
+    }
+
+    let localImageUrl = baseItem.image_url
+    if (newMenuItemImage) {
+      try {
+        localImageUrl = await readImageAsDataUrl(newMenuItemImage)
+      } catch (imageError) {
+        setRestaurantPageMessage(imageError.message)
         return
       }
     }
@@ -1608,6 +1757,7 @@ function App() {
       price: baseItem.price,
       description: baseItem.description,
       badge: baseItem.badge,
+      image_url: localImageUrl,
     }
 
     setMenuCategories((current) => {
@@ -1624,7 +1774,9 @@ function App() {
       price: '',
       description: '',
       badge: 'Popular',
+      image_url: '',
     })
+    setNewMenuItemImage(null)
     setRestaurantPageMessage('Menu item added successfully.')
   }
 
@@ -1676,7 +1828,7 @@ function App() {
   const handleGenerateRestaurantShareLink = () => {
     const baseUrl = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5173'
     const slug = (restaurantProfile.name || 'bluebird-bistro').toLowerCase().replace(/[^a-z0-9]+/g, '-')
-    const shareUrl = `${baseUrl}/?hotelPage=${encodeURIComponent(slug)}`
+    const shareUrl = `${baseUrl}/myapp/?hotelPage=${encodeURIComponent(slug)}`
     setRestaurantShareUrl(shareUrl)
     setRestaurantPageMessage('Shareable restaurant page link created.')
 
@@ -1806,6 +1958,7 @@ function App() {
       setQrTableId(createdTableId ? String(createdTableId) : '')
       setQrToken('')
       setQrImageUrl('')
+      setQrGuestUrl('')
       setTableMessage(`Table ${tableNumber} created successfully. Use table ID ${createdTableId ?? 'n/a'} for QR generation.`)
       setTableNumber(tableNumber)
       setTableName('')
@@ -1842,18 +1995,22 @@ function App() {
       }, staffToken)
 
       const generatedToken = response?.data?.token
-      const generatedQrUrl = response?.data?.qr_url
-
-      let nextImageUrl = ''
-
-      if (generatedQrUrl) {
-        nextImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(generatedQrUrl)}`
-      } else if (generatedToken) {
-        nextImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(generatedToken)}`
+      const backendQrUrl = response?.data?.qr_url
+      const guestPageUrl = new URL(import.meta.env.BASE_URL || '/', window.location.origin)
+      if (backendQrUrl) {
+        const backendUrl = new URL(backendQrUrl, window.location.origin)
+        backendUrl.searchParams.forEach((value, key) => guestPageUrl.searchParams.set(key, value))
       }
+      guestPageUrl.searchParams.set('table', String(response?.data?.table_id ?? qrTableId))
+      if (response?.data?.guest_pin) {
+        guestPageUrl.searchParams.set('pin', String(response.data.guest_pin))
+      }
+      const nextGuestUrl = guestPageUrl.toString()
+      const nextImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(nextGuestUrl)}`
 
       setQrToken(generatedToken || 'QR token generated successfully.')
       setQrImageUrl(nextImageUrl)
+      setQrGuestUrl(nextGuestUrl)
       return nextImageUrl
     } catch (qrError) {
       setQrToken(qrError.message)
@@ -3131,7 +3288,7 @@ function App() {
           </button>
           <div style={{ width: '100%', textAlign: 'center', fontSize: '0.8rem', wordBreak: 'break-all' }}>
             <strong>Scanner URL:</strong><br />
-            {qrToken ? decodeURIComponent(qrImageUrl.replace('https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=', '')) : 'URL unavailable'}
+            {qrGuestUrl || 'URL unavailable'}
           </div>
         </div>
       )}
@@ -3536,6 +3693,37 @@ function App() {
             />
           </label>
 
+          <div className="menu-image-fields">
+            <label>
+              Dish image URL (optional)
+              <input
+                type="url"
+                value={newMenuItem.image_url}
+                onChange={(event) => {
+                  setNewMenuItem((current) => ({ ...current, image_url: event.target.value }))
+                  if (event.target.value) setNewMenuItemImage(null)
+                }}
+                placeholder="https://example.com/dish.jpg"
+              />
+            </label>
+            <label>
+              Or upload an image
+              <input
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/gif"
+                onChange={(event) => {
+                  const file = event.target.files?.[0] || null
+                  setNewMenuItemImage(file)
+                  if (file) setNewMenuItem((current) => ({ ...current, image_url: '' }))
+                }}
+              />
+            </label>
+            {newMenuItem.image_url && !newMenuItemImage && (
+              <img className="menu-image-preview" src={newMenuItem.image_url} alt="Dish image preview" />
+            )}
+            {newMenuItemImage && <span className="menu-image-filename">Selected: {newMenuItemImage.name}</span>}
+          </div>
+
           <button type="submit" className="primary-button">Add menu item</button>
         </form>
       </div>
@@ -3579,6 +3767,7 @@ function App() {
         <div className="restaurant-menu-list">
           {restaurantMenu.map((item) => (
             <div className="restaurant-menu-item" key={item.id}>
+              {item.image_url && <img className="menu-item-thumbnail" src={item.image_url} alt={item.name} loading="lazy" />}
               <div>
                 <strong>{item.name}</strong>
                 <span>{item.category}</span>
@@ -3729,6 +3918,37 @@ function App() {
             />
           </label>
 
+          <div className="menu-image-fields">
+            <label>
+              Dish image URL (optional)
+              <input
+                type="url"
+                value={newMenuItem.image_url}
+                onChange={(event) => {
+                  setNewMenuItem((current) => ({ ...current, image_url: event.target.value }))
+                  if (event.target.value) setNewMenuItemImage(null)
+                }}
+                placeholder="https://example.com/dish.jpg"
+              />
+            </label>
+            <label>
+              Or upload an image
+              <input
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/gif"
+                onChange={(event) => {
+                  const file = event.target.files?.[0] || null
+                  setNewMenuItemImage(file)
+                  if (file) setNewMenuItem((current) => ({ ...current, image_url: '' }))
+                }}
+              />
+            </label>
+            {newMenuItem.image_url && !newMenuItemImage && (
+              <img className="menu-image-preview" src={newMenuItem.image_url} alt="Dish image preview" />
+            )}
+            {newMenuItemImage && <span className="menu-image-filename">Selected: {newMenuItemImage.name}</span>}
+          </div>
+
           <button type="submit" className="primary-button">Add menu item</button>
         </form>
       </div>
@@ -3742,6 +3962,7 @@ function App() {
         <div className="restaurant-menu-list">
           {restaurantMenu.map((item) => (
             <div className="restaurant-menu-item" key={item.id}>
+              {item.image_url && <img className="menu-item-thumbnail" src={item.image_url} alt={item.name} loading="lazy" />}
               <div>
                 <strong>{item.name}</strong>
                 <span>{item.category}</span>
@@ -3930,7 +4151,15 @@ function App() {
 
     return (
       <main className="admin-shell">
-        <aside className="admin-sidebar panel">
+        {isAdminMenuOpen && (
+          <button
+            type="button"
+            className="sidebar-scrim"
+            aria-label="Close navigation menu"
+            onClick={() => setIsAdminMenuOpen(false)}
+          />
+        )}
+        <aside className={`admin-sidebar panel${isAdminMenuOpen ? ' is-open' : ''}`}>
           <div className="brand-block">
             <span className="eyebrow">Control center</span>
             <h3>{isSuperAdmin ? 'Platform Admin' : 'Bluebird Admin'}</h3>
@@ -3942,7 +4171,10 @@ function App() {
                 key={item.id}
                 type="button"
                 className={activeAdminSection === item.id ? 'sidebar-link active' : 'sidebar-link'}
-                onClick={() => setActiveAdminSection(item.id)}
+                onClick={() => {
+                  setActiveAdminSection(item.id)
+                  setIsAdminMenuOpen(false)
+                }}
               >
                 {item.label}
               </button>
@@ -3957,6 +4189,16 @@ function App() {
         </aside>
 
         <section className="admin-content panel">
+          <button
+            type="button"
+            className="admin-menu-toggle"
+            aria-label={isAdminMenuOpen ? 'Close navigation menu' : 'Open navigation menu'}
+            aria-expanded={isAdminMenuOpen}
+            onClick={() => setIsAdminMenuOpen((open) => !open)}
+          >
+            <span aria-hidden="true">☰</span>
+            <span>Menu</span>
+          </button>
           {staffUser && (
             <div className="panel-header compact" style={{ marginBottom: '1rem' }}>
               <strong>{staffUser.name || 'User'}</strong>
@@ -3970,16 +4212,16 @@ function App() {
   }
 
   const renderGuestFlow = () => (
-    <main className="layout">
-      <section className="panel join-panel">
+    <main className={`layout guest-ordering-layout${joined ? ' is-joined' : ''}`}>
+      {!joined && <section className="panel join-panel guest-join-card">
         <div className="panel-header">
-          <h2>Join table</h2>
+          <h2>🪑 Join table</h2>
           <span className="mini-tag">Guest flow</span>
         </div>
 
         <form className="join-form" onSubmit={handleJoin}>
           <label>
-            Table ID
+            🔢 Table ID
             <input
               type="number"
               min="1"
@@ -3990,7 +4232,7 @@ function App() {
           </label>
 
           <label>
-            Your name *
+            👤 Your name *
             <input
               type="text"
               value={guestName}
@@ -4003,7 +4245,7 @@ function App() {
           </label>
 
           <label>
-            Contact number
+            📞 Contact number
             <input
               type="tel"
               value={guestContactNumber}
@@ -4015,7 +4257,7 @@ function App() {
           </label>
 
           <label>
-            Guest PIN
+            🔐 Guest PIN
             <input
               type="password"
               value={pin}
@@ -4032,17 +4274,22 @@ function App() {
 
         {error && <p className="message error">{error}</p>}
         {confirmation && <p className="message success">{confirmation}</p>}
-      </section>
+      </section>}
 
-      <section className="panel menu-panel">
+      <section className="panel menu-panel guest-menu-card">
         <div className="panel-header">
-          <h2>Menu</h2>
-          <span className="mini-tag">Ready in 15 min</span>
+          <h2>🍽️ Menu</h2>
+          <span className="mini-tag guest-ready-badge">⏱️ Ready in 15 min</span>
         </div>
 
         <div className="menu-grid">
           {guestMenuItems.map((menuItem) => (
-            <article className="menu-card" key={menuItem.id}>
+            <article className="menu-card guest-food-card" key={menuItem.id}>
+              {menuItem.image_url ? (
+                <img className="guest-food-image" src={menuItem.image_url} alt={menuItem.name} loading="lazy" />
+              ) : (
+                <span className="guest-food-icon" aria-hidden="true">🍽️</span>
+              )}
               <div className="menu-head">
                 <span className="badge">{menuItem.badge}</span>
                 <strong>{currency.format(menuItem.price)}</strong>
@@ -4051,26 +4298,36 @@ function App() {
               <h3>{menuItem.name}</h3>
               <p>{menuItem.description}</p>
 
-              <button type="button" onClick={() => addItem(menuItem)}>
-                Add to order
+              <button type="button" className="guest-add-button" onClick={() => addItem(menuItem)}>
+                + Add to order
               </button>
             </article>
           ))}
         </div>
+        {isLoadingGuestMenu && guestMenuItems.length === 0 ? (
+          <p className="empty-state guest-menu-empty-state">Loading the table menu…</p>
+        ) : guestMenuItems.length === 0 && (
+          <p className="empty-state guest-menu-empty-state">
+            {error || 'No dishes are available for this table yet. Please ask a staff member for help.'}
+          </p>
+        )}
       </section>
 
-      <aside className="panel cart-panel">
+      <aside className="panel cart-panel guest-cart-card">
         <div className="panel-header">
-          <h2>Your order</h2>
-          <span className="mini-tag">{cartItems.length} items</span>
+          <h2>🛒 Your order</h2>
+          <span className="mini-tag guest-cart-count">
+            {cartUnitCount} items · {cartItems.length} dishes
+          </span>
         </div>
 
         {cartItems.length === 0 ? (
-          <p className="empty-state">No products selected yet.</p>
+          <p className="empty-state guest-empty-state"><span aria-hidden="true">🛒</span>No products selected yet.</p>
         ) : (
           <div className="cart-list">
             {cartItems.map(({ menuItem, quantity }) => (
               <div className="cart-item" key={menuItem.id}>
+                {menuItem.image_url && <img className="cart-item-thumbnail" src={menuItem.image_url} alt="" loading="lazy" />}
                 <div>
                   <strong>{menuItem.name}</strong>
                   <span>{currency.format(menuItem.price)} each</span>
@@ -4097,23 +4354,23 @@ function App() {
         <div className="summary">
           <div>
             <span>Subtotal</span>
-            <strong>{currency.format(total)}</strong>
+          <strong>{currency.format(total)}</strong>
           </div>
         </div>
 
         <button
           type="button"
-          className="primary-button full-width"
+          className="primary-button full-width guest-submit-button"
           onClick={submitOrder}
-          disabled={isSubmitting || !joined}
+          disabled={isSubmitting || cartItems.length === 0}
         >
           {isSubmitting ? 'Submitting...' : 'Submit order'}
         </button>
       </aside>
 
-      <section className="panel guest-orders-panel">
+      <section id="guest-table-orders" className="panel guest-orders-panel guest-history-card">
         <div className="panel-header">
-          <h2>Table orders</h2>
+          <h2>📋 Table orders</h2>
           <span className="mini-tag">{guestOrders.length} orders</span>
         </div>
 
@@ -4146,6 +4403,7 @@ function App() {
                   {(order.items || []).map((item) => (
                     <li key={`${order.id}-${item.menu_item_id}`}>
                       <div className="guest-order-item-main">
+                        {item.image_url && <img className="cart-item-thumbnail" src={item.image_url} alt="" loading="lazy" />}
                         <span>{item.quantity}x {item.name}</span>
                         <strong>{currency.format(item.unit_price * item.quantity)}</strong>
                       </div>
@@ -4198,6 +4456,129 @@ function App() {
           </div>
         )}
       </section>
+
+      {(cartMessage || (joined && error)) && (
+        <div
+          className={`guest-feedback-toast${joined && error ? ' is-error' : ''}`}
+          role="status"
+          aria-live="polite"
+        >
+          {cartMessage || error}
+        </div>
+      )}
+
+      <div className="guest-floating-actions" aria-label="Guest table shortcuts">
+          <button
+            type="button"
+            className="guest-floating-button guest-cart-open-button"
+            onClick={() => setIsCartOpen(true)}
+            aria-haspopup="dialog"
+            aria-expanded={isCartOpen}
+          >
+            <span aria-hidden="true">🛒</span> View cart ({cartUnitCount})
+          </button>
+          {joined && <button
+            type="button"
+            className="guest-floating-button guest-view-orders-button"
+            onClick={() => document.getElementById('guest-table-orders')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+          >
+            <span aria-hidden="true">▤</span> View orders
+          </button>}
+          {joined && <button
+            type="button"
+            className="guest-floating-button guest-reconnect-button"
+            onClick={() => void joinTable(tableId, pin)}
+            disabled={isJoining}
+          >
+            <span aria-hidden="true">↻</span> {isJoining ? 'Reconnecting…' : 'Reconnect'}
+          </button>}
+      </div>
+
+      {isCartOpen && (
+        <div className="guest-cart-backdrop" onClick={() => setIsCartOpen(false)}>
+          <section
+            className="guest-cart-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="guest-cart-dialog-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="guest-cart-dialog-header">
+              <div>
+                <h2 id="guest-cart-dialog-title">Your cart</h2>
+                <p>{cartUnitCount} items across {cartItems.length} dishes</p>
+              </div>
+              <button
+                type="button"
+                className="guest-cart-close-button"
+                onClick={() => setIsCartOpen(false)}
+                aria-label="Close cart"
+              >
+                ×
+              </button>
+            </div>
+
+            {error && <p className="guest-cart-inline-error" role="alert">{error}</p>}
+
+            {cartItems.length === 0 ? (
+              <p className="guest-cart-dialog-empty">Your cart is empty. Add a dish from the menu to get started.</p>
+            ) : (
+              <div className="guest-cart-dialog-items">
+                {cartItems.map(({ menuItem, quantity }) => (
+                  <article className="guest-cart-dialog-item" key={`popup-${menuItem.id}`}>
+                    {menuItem.image_url ? (
+                      <img src={menuItem.image_url} alt="" loading="lazy" />
+                    ) : (
+                      <span className="guest-cart-dialog-placeholder" aria-hidden="true">🍽️</span>
+                    )}
+                    <div className="guest-cart-dialog-item-info">
+                      <strong>{menuItem.name}</strong>
+                      <span>{currency.format(menuItem.price)} each</span>
+                    </div>
+                    <div className="guest-cart-dialog-controls" aria-label={`Quantity for ${menuItem.name}`}>
+                      <button
+                        type="button"
+                        aria-label={`Decrease ${menuItem.name} quantity`}
+                        onClick={() => updateQuantity(menuItem.id, quantity - 1)}
+                      >−</button>
+                      <span>{quantity}</span>
+                      <button
+                        type="button"
+                        aria-label={`Increase ${menuItem.name} quantity`}
+                        onClick={() => updateQuantity(menuItem.id, quantity + 1)}
+                      >+</button>
+                    </div>
+                    <strong className="guest-cart-dialog-line-total">{currency.format(menuItem.price * quantity)}</strong>
+                    <button
+                      type="button"
+                      className="guest-cart-dialog-remove"
+                      onClick={() => removeItem(menuItem.id)}
+                    >
+                      Remove
+                    </button>
+                  </article>
+                ))}
+              </div>
+            )}
+
+            <div className="guest-cart-dialog-footer">
+              <div className="guest-cart-dialog-subtotal">
+                <span>Subtotal</span>
+                <strong>{currency.format(total)}</strong>
+              </div>
+              {!joined && <p className="guest-cart-join-hint">Join the table before submitting your order.</p>}
+              <button
+                type="button"
+                className="primary-button guest-cart-dialog-submit"
+                onClick={submitOrder}
+                disabled={isSubmitting || cartItems.length === 0}
+              >
+                {isSubmitting ? 'Submitting…' : 'Submit order'}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </main>
   )
 
@@ -4480,6 +4861,7 @@ function App() {
           <div className="restaurant-menu-list public-menu">
             {restaurantMenu.map((item) => (
               <div className="restaurant-menu-item public-item" key={item.id}>
+                {item.image_url && <img className="menu-item-thumbnail" src={item.image_url} alt={item.name} loading="lazy" />}
                 <div>
                   <strong>{item.name}</strong>
                   <span>{item.description}</span>
@@ -4596,67 +4978,85 @@ function App() {
   }
 
   return (
-    <div className="app-shell">
-      <header className="topbar">
+    <div className={`app-shell${view === 'guest' ? ' guest-app-shell' : ''}`}>
+      {view !== 'guest' && <header className="topbar">
         <div>
           <p className="eyebrow">Restaurant QR Ordering</p>
           <h1>Bluebird Table Service</h1>
         </div>
         <div className="header-actions">
           <div className="status-pill">{joined ? 'Session active' : 'Waiting for table join'}</div>
-          <div className="view-switcher">
+          <button
+            type="button"
+            className="main-menu-toggle"
+            aria-label={isMainMenuOpen ? 'Close navigation menu' : 'Open navigation menu'}
+            aria-expanded={isMainMenuOpen}
+            onClick={() => setIsMainMenuOpen((open) => !open)}
+          >
+            <span aria-hidden="true">☰</span>
+            <span>Menu</span>
+          </button>
+          {isMainMenuOpen && (
+            <button
+              type="button"
+              className="main-nav-scrim"
+              aria-label="Close navigation menu"
+              onClick={() => setIsMainMenuOpen(false)}
+            />
+          )}
+          <div className={`view-switcher main-view-switcher${isMainMenuOpen ? ' is-open' : ''}`}>
             <button
               type="button"
               className={view === 'home' ? 'tab active' : 'tab'}
-              onClick={() => setView('home')}
+              onClick={() => { setView('home'); setIsMainMenuOpen(false) }}
             >
               Home
             </button>
             <button
               type="button"
               className={view === 'contact' ? 'tab active' : 'tab'}
-              onClick={() => setView('contact')}
+              onClick={() => { setView('contact'); setIsMainMenuOpen(false) }}
             >
               Contact us
             </button>
             <button
               type="button"
               className={view === 'guest' ? 'tab active' : 'tab'}
-              onClick={() => setView('guest')}
+              onClick={() => { setView('guest'); setIsMainMenuOpen(false) }}
             >
               Guest flow
             </button>
             <button
               type="button"
               className={view === 'restaurant' ? 'tab active' : 'tab'}
-              onClick={() => setView('restaurant')}
+              onClick={() => { setView('restaurant'); setIsMainMenuOpen(false) }}
             >
               Hotel page
             </button>
             <button
               type="button"
               className={view === 'staff' ? 'tab active' : 'tab'}
-              onClick={() => setView('staff')}
+              onClick={() => { setView('staff'); setIsMainMenuOpen(false) }}
             >
               Staff KDS
             </button>
             <button
               type="button"
               className={view === 'billing' ? 'tab active' : 'tab'}
-              onClick={() => setView('billing')}
+              onClick={() => { setView('billing'); setIsMainMenuOpen(false) }}
             >
               Billing
             </button>
             <button
               type="button"
               className={view === 'admin' ? 'tab active' : 'tab'}
-              onClick={() => setView('admin')}
+              onClick={() => { setView('admin'); setIsMainMenuOpen(false) }}
             >
               Admin
             </button>
           </div>
         </div>
-      </header>
+      </header>}
 
       {(() => {
         if (view === 'admin' && !staffToken) {

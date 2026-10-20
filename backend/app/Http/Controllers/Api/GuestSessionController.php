@@ -14,6 +14,53 @@ use Illuminate\Support\Str;
 
 class GuestSessionController extends Controller
 {
+    public function menu(Request $request)
+    {
+        $validated = $request->validate([
+            'table_id' => ['required', 'exists:dining_tables,id'],
+            'pin' => ['required', 'string'],
+        ]);
+
+        $table = DiningTable::findOrFail($validated['table_id']);
+        $session = TableSession::where('table_id', $table->id)
+            ->where('status', 'open')
+            ->latest('opened_at')
+            ->first();
+
+        if (! $session || ! Hash::check($validated['pin'], $session->guest_pin_hash ?? '')) {
+            abort(403, 'Invalid table PIN or no active table session found.');
+        }
+
+        $branch = $session->branch()->first() ?? $table->branch()->first();
+        $restaurant = $branch?->restaurant()->first();
+        $menuItemsQuery = MenuItem::query()
+            ->where('restaurant_id', $restaurant?->id)
+            ->where('status', 'active');
+
+        $branchMenuItems = $branch?->id
+            ? (clone $menuItemsQuery)->where('branch_id', $branch->id)->orderBy('id')->get()
+            : collect();
+
+        $menuItems = ($branchMenuItems->isNotEmpty() ? $branchMenuItems : $menuItemsQuery->orderBy('id')->get())
+            ->map(fn (MenuItem $item) => [
+                'id' => $item->id,
+                'name' => $item->name,
+                'description' => $item->description,
+                'image_url' => $item->image_url,
+                'price' => (int) $item->price,
+                'currency' => $item->currency ?? 'INR',
+                'badge' => 'Popular',
+            ])
+            ->values();
+
+        return response()->json([
+            'data' => [
+                'restaurant' => $restaurant ? ['id' => $restaurant->id, 'name' => $restaurant->name] : null,
+                'menu_items' => $menuItems,
+            ],
+        ]);
+    }
+
     public function join(Request $request)
     {
         $validated = $request->validate([
@@ -60,6 +107,7 @@ class GuestSessionController extends Controller
                     'id' => $item->id,
                     'name' => $item->name,
                     'description' => $item->description,
+                    'image_url' => $item->image_url,
                     'price' => (int) $item->price,
                     'currency' => $item->currency ?? 'INR',
                     'badge' => 'Popular',
@@ -130,6 +178,7 @@ class GuestSessionController extends Controller
                         'unit_price' => (float) $item->unit_price,
                         'notes' => $item->notes,
                         'description' => $item->menuItem?->description,
+                        'image_url' => $item->menuItem?->image_url,
                     ];
                 })->values()->all(),
             ];

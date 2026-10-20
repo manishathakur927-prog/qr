@@ -219,3 +219,17 @@ Pending:
 
 ## Recommended Next Step
 Advance into the owner/admin dashboard, real-time order sync, and pilot provisioning so the platform is ready for a live restaurant rollout.
+
+
+
+git config user.name "Narender Kumar"
+git config user.email "manishathakur927@gmail.com"
+
+git commit -m "first commit"
+
+
+
+manishathakur927-prog
+
+
+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order and 

@@ -69,6 +69,7 @@ class GuestOrderController extends Controller
                         return [
                             'menu_item_id' => $item->menu_item_id,
                             'name' => $item->menuItem?->name ?? 'Menu item',
+                            'image_url' => $item->menuItem?->image_url,
                             'quantity' => (int) $item->quantity,
                             'unit_price' => (float) $item->unit_price,
                             'notes' => $item->notes,
